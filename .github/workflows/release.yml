@@ -1,0 +1,88 @@
+# .github/workflows/release.yml
+
+name: Build and Release Arch Package
+
+on:
+  # Triggers the workflow when a tag is pushed (e.g., v1.0.0, v2.3.1-alpha)
+  push:
+    tags:
+      - 'v*'
+
+  # Allows you to run this workflow manually from the Actions tab for testing
+  workflow_dispatch:
+
+jobs:
+  # This job is the same as before; it builds the Arch Linux packages
+  build:
+    name: Build zen-browser
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --security-opt seccomp=unconfined
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      # 2. Install build dependencies
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel git pnpm rsync cbindgen clang diffutils imake lld llvm mesa \
+            nasm nodejs-lts-iron python rust unzip wasi-compiler-rt wasi-libc \
+            wasi-libc++ wasi-libc++abi xorg-server-xvfb yasm zip
+
+      # 3. Increase the open file limit
+      - name: Increase open file limit
+        run: ulimit -n 4096
+
+      # 4. Set correct permissions for a non-root build user
+      - name: Set correct permissions
+        run: |
+          useradd -m builduser
+          echo "builduser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builduser:builduser .
+          
+      # 5. Build the package
+      - name: Build the package
+        run: sudo -u builduser makepkg -sf --noconfirm
+
+      # 6. Upload packages as an artifact to be used by the release job
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: "*.pkg.tar.zst"
+
+  # This new job creates the GitHub Release
+  release:
+    name: Create GitHub Release
+    # This job depends on the 'build' job and will only run if it succeeds
+    needs: build
+    runs-on: ubuntu-latest
+    # Permissions are required for the action to create a release
+    permissions:
+      contents: write
+
+    steps:
+      # 1. Download the packages that were built in the previous job
+      - name: Download built packages from artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: packages
+
+      # 2. Create the GitHub Release and upload the packages as release assets
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # This uses the tag that triggered the workflow as the release name
+          name: Release ${{ github.ref_name }}
+          # The files to upload. The wildcard matches all built packages.
+          files: "*.pkg.tar.zst"
+        env:
+          # The GITHUB_TOKEN is automatically provided by GitHub Actions
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
